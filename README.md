@@ -1,10 +1,19 @@
 # Swarmbreaker
 
-Retro arcade shooter inspired by the segmented-enemy chaos of Centipede.
+Retro arcade trench defence inspired by the segmented-enemy chaos of `Centipede`.
 
-Poisoned mushrooms now matter: if a centipede head hits one, it dives straight down toward the player zone before recovering into its side-to-side pattern.
+The current demo slice now includes:
 
-Runs now also support pause and extra-life score thresholds, so longer sessions feel closer to a proper arcade climb instead of a bare survival loop.
+- title, mode select, records, help, options, pause, and game-over screens
+- persistent presentation settings plus a local profile for unlocks and run history
+- a combo multiplier and clearer score-chasing feedback
+- challenge modes: `Classic Defence`, `Time Attack`, `Toxic Gauntlet`, and `Boss Rush`
+- boss waves with a Hive Matriarch event and mode-specific escalation rules
+- a guided first-run objective card layered over the opening waves
+- adaptive synth-backed menu, run, and boss music states
+- stronger visual feedback using hit, muzzle, and explosion effects
+- extra-life thresholds, run summaries, unlock notices, and local leaderboard-ready records
+- poisoned mushrooms that force centipede heads into dive attacks
 
 ## Requirements
 
@@ -25,18 +34,71 @@ python main.py
 
 ## Controls
 
-- Left / Right: move
-- Space: fire
+- Left / Right: strafe in-game and change records pages
+- Up / Down: move through menus and advance or fall back within the trench
+- Hold `Space`: fire
+- `Enter`: confirm menu selections or deploy a wave immediately
 - `P`: pause or resume the run
+- `H`: open the help card during a run
 - `M`: mute or restore audio
-- Enter: start or restart
-- Esc: exit or end the current run
+- `R`: open records from the mode select screen
+- `Esc`: back out of menus or end the current run
 
 ## Smoke test
 
 ```bash
 set SDL_VIDEODRIVER=dummy
 set SDL_AUDIODRIVER=dummy
-set BUGBLASTER_HEADLESS_SMOKE_TEST=1
+set SWARMBREAKER_HEADLESS_SMOKE_TEST=1
 python main.py
 ```
+
+The legacy `BUGBLASTER_HEADLESS_SMOKE_TEST=1` flag still works for backwards compatibility.
+
+## Desktop review pack
+
+Swarmbreaker remains a desktop-first pygame game.
+
+To generate the shared desktop evidence pack used by the manager hub:
+
+```bash
+python tools/generate_review_pack.py
+```
+
+This writes deterministic review screenshots and metadata to `../LOCAL-ONLY/captures/swarmbreaker`.
+
+## Experimental browser review prototype
+
+There is now a lightweight pygbag-based review URL for manager capture and browser-feasibility checks. It is not the primary shipping runtime.
+
+Build the staged prototype:
+
+```bash
+python tools/build_browser_prototype.py
+```
+
+Serve the generated web root:
+
+```bash
+cd build/browser-prototype-source/build/web
+python -m http.server 8000
+```
+
+Open the fast-entry review URL:
+
+```text
+http://127.0.0.1:8000/?autostart=1&review=1&mode=classic
+```
+
+Review mode uses deterministic startup and lightweight procedural browser assets so the URL reaches a stable reviewable state quickly.
+
+If you already captured browser screenshots through Playwright or another browser automation pass, publish them into the shared manager pack with:
+
+```bash
+python tools/generate_browser_review_pack.py
+```
+
+## Local save data
+
+High score, settings, unlocks, and local run records are now written to your local user data folder instead of the repo root.
+Legacy repo-root high score and settings files are still read if they already exist.

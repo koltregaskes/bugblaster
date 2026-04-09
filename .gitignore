@@ -1,5 +1,8 @@
 __pycache__/
 swarmbreaker_highscore.json
+swarmbreaker_settings.json
+swarmbreaker_profile.json
+build/
 *.py[cod]
 .pytest_cache/
 .DS_Store
