@@ -55,6 +55,17 @@ python main.py
 
 The legacy `BUGBLASTER_HEADLESS_SMOKE_TEST=1` flag still works for backwards compatibility.
 
+## Desktop validation
+
+For the full deterministic desktop regression lane, run:
+
+```bash
+python tools/validate_desktop_demo.py
+```
+
+This validates the authored sound bank, late-wave surge tuning, Matriarch Prime escalation, and the shared desktop review-pack evidence.
+It also writes a dated validation report into `../LOCAL-ONLY/captures/swarmbreaker`.
+
 ## Desktop review pack
 
 Swarmbreaker remains a desktop-first pygame game.
@@ -66,6 +77,17 @@ python tools/generate_review_pack.py
 ```
 
 This writes deterministic review screenshots and metadata to `../LOCAL-ONLY/captures/swarmbreaker`.
+
+## Desktop sound bank
+
+The desktop build now supports an authored sound-bank override at `assets/sounds/desktop`.
+To regenerate the shipped retro cue pack:
+
+```bash
+python tools/generate_desktop_sound_bank.py
+```
+
+Any `.wav` or `.ogg` placed in that folder with the same cue name as the runtime sound key will override the procedural fallback.
 
 ## Experimental browser review prototype
 

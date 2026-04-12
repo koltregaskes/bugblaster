@@ -99,6 +99,16 @@ WARNING_COLOR = (255, 204, 94)
 DANGER_COLOR = (255, 110, 110)
 AUDIO_ON_COLOR = (132, 232, 179)
 AUDIO_OFF_COLOR = (255, 160, 160)
+RANK_THRESHOLDS = [
+    ("C", 3_000),
+    ("B", 7_000),
+    ("A", 12_000),
+    ("S", 18_000),
+]
+OPTIONAL_SOUND_ROOTS = (
+    os.path.join("assets", "sounds", "desktop"),
+    os.path.join("assets", "sounds"),
+)
 
 LEVEL_THEMES = [
     {
@@ -717,6 +727,24 @@ def load_sound(path):
         return SilentSound()
 
 
+def find_optional_sound(base_name):
+    for root in OPTIONAL_SOUND_ROOTS:
+        for extension in (".ogg", ".wav"):
+            candidate = os.path.join(root, f"{base_name}{extension}")
+            if os.path.exists(candidate):
+                return candidate
+    return None
+
+
+def load_sound_bank_entry(base_name, fallback_notes=None, volume=0.3):
+    sound_path = find_optional_sound(base_name)
+    if sound_path:
+        return load_sound(sound_path)
+    if fallback_notes is None:
+        return SilentSound()
+    return build_tone_sound(fallback_notes, volume)
+
+
 class AnimatedEffect(pygame.sprite.Sprite):
     def __init__(self, frames, position, frame_step=0.55):
         super().__init__()
@@ -999,6 +1027,7 @@ class HiveMatriarch(pygame.sprite.Sprite):
         super().__init__()
         self.game = game
         self.profile = profile
+        self.prime = profile.get("prime", False)
         self.base_image = self.game.assets["boss"]
         self.image = self.base_image.copy()
         self.rect = self.image.get_rect(midtop=(SCREEN_WIDTH // 2, 42))
@@ -1010,6 +1039,7 @@ class HiveMatriarch(pygame.sprite.Sprite):
         self.reinforcement_timer = 200
         self.damage_flash_timer = 0
         self.phase = 1
+        self.prime_burst_used = False
 
     def update(self):
         self.float_phase += 0.06
@@ -1044,8 +1074,18 @@ class HiveMatriarch(pygame.sprite.Sprite):
             new_phase = 1
         if new_phase > self.phase:
             self.phase = new_phase
-            self.game.play_sound(self.game.sounds["warning"])
-            self.game.set_status_message(f"Hive pressure rising. Phase {self.phase}.", 120)
+            self.game.play_sound(self.game.sounds["boss_phase"])
+            if self.prime and self.phase == 3:
+                self.speed_x = math.copysign(abs(self.speed_x) + 0.6, self.speed_x)
+                self.reinforcement_timer = min(self.reinforcement_timer, 70)
+                self.fire_prime_burst()
+                self.game.trigger_shake(6, 22)
+                self.game.trigger_flash(DANGER_COLOR, 135, 10)
+                self.game.set_status_message("Matriarch Prime is breaking the trench.", 130)
+            elif self.prime and self.phase == 2:
+                self.game.set_status_message("Matriarch Prime is arming a trench break.", 120)
+            else:
+                self.game.set_status_message(f"Hive pressure rising. Phase {self.phase}.", 120)
 
     def refresh_image(self):
         self.image = self.base_image.copy()
@@ -1074,17 +1114,38 @@ class HiveMatriarch(pygame.sprite.Sprite):
             )
             self.game.add_sprite(bolt, 5, self.game.all_sprites, self.game.enemy_projectiles)
 
+    def fire_prime_burst(self):
+        if self.prime_burst_used:
+            return
+        self.prime_burst_used = True
+        self.game.play_sound(self.game.sounds["surge"])
+        self.game.spawn_effect("explosion", self.rect.midbottom, large=False)
+        volley_size = 7
+        spread = 1.35
+        for index in range(volley_size):
+            offset = index - (volley_size - 1) / 2
+            bolt = EnemyBolt(
+                self.rect.centerx + int(offset * 20),
+                self.rect.bottom - 2,
+                velocity_x=offset * spread,
+                velocity_y=5.1 + abs(offset) * 0.24,
+            )
+            self.game.add_sprite(bolt, 5, self.game.all_sprites, self.game.enemy_projectiles)
+
     def release_reinforcements(self):
         if self.phase >= 2 and len(self.game.spiders) < 2:
             spider = Spider(self.game)
             self.game.add_sprite(spider, 4, self.game.all_sprites, self.game.spiders)
-        short_wave = max(4, 3 + self.phase)
+        short_wave = max(4, 3 + self.phase + (1 if self.prime and self.phase == 3 else 0))
         spawn_x = GRID_STEP * random.randint(3, 10)
         self.game.spawn_centipede_wave(length=short_wave, start_x=spawn_x, start_y=GRID_STEP * random.randint(2, 4))
         if self.phase == 3 and len(self.game.scorpions) == 0:
             scorpion = Scorpion(self.game)
             self.game.add_sprite(scorpion, 4, self.game.all_sprites, self.game.scorpions)
-        self.game.set_status_message("Matriarch releases reinforcements.", 90)
+        if self.prime and self.phase == 3:
+            self.game.set_status_message("Matriarch Prime is flooding the trench.", 100)
+        else:
+            self.game.set_status_message("Matriarch releases reinforcements.", 90)
 
     def take_hit(self, damage):
         self.health -= damage
@@ -1230,34 +1291,52 @@ class Game:
 
     def load_sounds(self):
         return {
-            "shoot": load_sound("assets/sounds/shoot.wav"),
-            "enemy_hit": load_sound("assets/sounds/enemy_hit.wav"),
-            "player_die": load_sound("assets/sounds/player_die.wav"),
-            "warning": build_tone_sound([(220, 0.08, "triangle"), (165, 0.08, "triangle"), (220, 0.14, "triangle")], 0.32),
-            "combo": build_tone_sound([(440, 0.05, "square"), (554, 0.05, "square"), (659, 0.09, "square")], 0.22),
-            "bonus": build_tone_sound([(392, 0.08, "triangle"), (523, 0.08, "triangle"), (784, 0.16, "triangle")], 0.28),
-            "wave": build_tone_sound([(262, 0.04, "square"), (330, 0.04, "square"), (392, 0.08, "triangle")], 0.22),
-            "boss_shot": build_tone_sound([(185, 0.08, "square"), (147, 0.08, "square")], 0.25),
-            "boss_hit": build_tone_sound([(780, 0.03, "triangle"), (620, 0.03, "triangle")], 0.18),
-            "boss_die": build_tone_sound([(220, 0.09, "triangle"), (185, 0.08, "triangle"), (147, 0.08, "triangle"), (110, 0.18, "triangle")], 0.34),
-            "menu": build_tone_sound([(440, 0.04, "triangle")], 0.12),
-            "record": build_tone_sound([(523, 0.05, "triangle"), (659, 0.06, "triangle"), (784, 0.18, "triangle")], 0.24),
-            "unlock": build_tone_sound([(330, 0.06, "triangle"), (392, 0.06, "triangle"), (523, 0.08, "triangle"), (659, 0.18, "triangle")], 0.24),
-            "title_theme": build_tone_sound(
+            "shoot": load_sound_bank_entry("shoot"),
+            "enemy_hit": load_sound_bank_entry("enemy_hit"),
+            "player_die": load_sound_bank_entry("player_die"),
+            "warning": load_sound_bank_entry("warning", [(220, 0.08, "triangle"), (165, 0.08, "triangle"), (220, 0.14, "triangle")], 0.32),
+            "combo": load_sound_bank_entry("combo", [(440, 0.05, "square"), (554, 0.05, "square"), (659, 0.09, "square")], 0.22),
+            "bonus": load_sound_bank_entry("bonus", [(392, 0.08, "triangle"), (523, 0.08, "triangle"), (784, 0.16, "triangle")], 0.28),
+            "wave": load_sound_bank_entry("wave", [(262, 0.04, "square"), (330, 0.04, "square"), (392, 0.08, "triangle")], 0.22),
+            "surge": load_sound_bank_entry("surge", [(262, 0.06, "square"), (196, 0.06, "square"), (262, 0.12, "triangle")], 0.28),
+            "boss_shot": load_sound_bank_entry("boss_shot", [(185, 0.08, "square"), (147, 0.08, "square")], 0.25),
+            "boss_hit": load_sound_bank_entry("boss_hit", [(780, 0.03, "triangle"), (620, 0.03, "triangle")], 0.18),
+            "boss_die": load_sound_bank_entry("boss_die", [(220, 0.09, "triangle"), (185, 0.08, "triangle"), (147, 0.08, "triangle"), (110, 0.18, "triangle")], 0.34),
+            "boss_phase": load_sound_bank_entry("boss_phase", [(220, 0.05, "square"), (277, 0.05, "square"), (185, 0.06, "triangle"), (110, 0.18, "triangle")], 0.26),
+            "menu": load_sound_bank_entry("menu", [(440, 0.04, "triangle")], 0.12),
+            "menu_confirm": load_sound_bank_entry("menu_confirm", [(392, 0.05, "triangle"), (523, 0.08, "triangle")], 0.18),
+            "record": load_sound_bank_entry("record", [(523, 0.05, "triangle"), (659, 0.06, "triangle"), (784, 0.18, "triangle")], 0.24),
+            "record_break": load_sound_bank_entry("record_break", [(587, 0.05, "triangle"), (784, 0.06, "triangle"), (988, 0.16, "triangle")], 0.26),
+            "rank_up": load_sound_bank_entry("rank_up", [(392, 0.05, "triangle"), (523, 0.05, "triangle"), (659, 0.1, "triangle")], 0.24),
+            "deploy": load_sound_bank_entry("deploy", [(196, 0.05, "triangle"), (262, 0.05, "triangle"), (330, 0.12, "triangle")], 0.22),
+            "unlock": load_sound_bank_entry("unlock", [(330, 0.06, "triangle"), (392, 0.06, "triangle"), (523, 0.08, "triangle"), (659, 0.18, "triangle")], 0.24),
+            "last_life": load_sound_bank_entry("last_life", [(196, 0.08, "triangle"), (165, 0.08, "triangle"), (147, 0.12, "triangle")], 0.26),
+            "title_theme": load_sound_bank_entry(
+                "title_theme",
                 [
                     (262, 0.18, "triangle"), (330, 0.18, "triangle"), (392, 0.18, "triangle"), (523, 0.24, "triangle"),
                     (392, 0.14, "triangle"), (330, 0.14, "triangle"), (262, 0.22, "triangle"), (196, 0.22, "triangle"),
                 ],
                 0.12,
             ),
-            "briefing_theme": build_tone_sound(
+            "mode_select_theme": load_sound_bank_entry(
+                "mode_select_theme",
+                [
+                    (220, 0.14, "triangle"), (277, 0.14, "triangle"), (330, 0.14, "triangle"), (440, 0.18, "triangle"),
+                    (330, 0.12, "triangle"), (277, 0.12, "triangle"), (220, 0.18, "triangle"), (262, 0.18, "triangle"),
+                ],
+                0.1,
+            ),
+            "briefing_theme": load_sound_bank_entry(
+                "briefing_theme",
                 [
                     (196, 0.16, "triangle"), (247, 0.16, "triangle"), (294, 0.16, "triangle"), (330, 0.2, "triangle"),
                     (294, 0.16, "triangle"), (247, 0.16, "triangle"), (196, 0.22, "triangle"), (220, 0.22, "triangle"),
                 ],
                 0.1,
             ),
-            "run_theme": build_tone_sound(
+            "run_theme": load_sound_bank_entry(
+                "run_theme",
                 [
                     (220, 0.1, "square"), (220, 0.1, "square"), (330, 0.08, "square"), (392, 0.12, "triangle"),
                     (220, 0.1, "square"), (220, 0.1, "square"), (330, 0.08, "square"), (440, 0.14, "triangle"),
@@ -1266,13 +1345,22 @@ class Game:
                 ],
                 0.1,
             ),
-            "boss_theme": build_tone_sound(
+            "boss_theme": load_sound_bank_entry(
+                "boss_theme",
                 [
                     (147, 0.12, "square"), (147, 0.12, "square"), (175, 0.1, "square"), (196, 0.14, "triangle"),
                     (147, 0.12, "square"), (147, 0.12, "square"), (131, 0.1, "square"), (165, 0.16, "triangle"),
                     (98, 0.14, "triangle"), (147, 0.12, "square"), (196, 0.1, "square"), (220, 0.18, "triangle"),
                 ],
                 0.11,
+            ),
+            "surge_theme": load_sound_bank_entry(
+                "surge_theme",
+                [
+                    (131, 0.1, "square"), (165, 0.1, "square"), (196, 0.12, "triangle"), (247, 0.14, "triangle"),
+                    (147, 0.1, "square"), (196, 0.1, "square"), (262, 0.12, "triangle"), (294, 0.14, "triangle"),
+                ],
+                0.12,
             ),
         }
 
@@ -1390,11 +1478,13 @@ class Game:
         self.mode_timer_frames = int(mode["time_limit_seconds"] * 60) if mode["time_limit_seconds"] else None
         self.timer_warning_stage = 0
         self.mode_best_score = self.mode_record(self.current_mode_id)["best_score"]
+        self.mode_best_score_start = self.mode_best_score
         self.run_unlocks = []
         self.run_record_highlights = []
         self.last_run_entry = None
         self.run_end_reason = "destroyed"
         self.run_recorded = False
+        self.score_record_announced = False
         self.stats = {
             "segments_destroyed": 0,
             "mushrooms_cleared": 0,
@@ -1404,6 +1494,7 @@ class Game:
         }
         self.tutorial_notice_seen = False
         self.rank_label = "C"
+        self.live_rank_label = "D"
 
     def default_mode_record(self):
         return {
@@ -1785,15 +1876,28 @@ class Game:
         self.shake_frames = max(self.shake_frames, frames)
 
     def add_points(self, points):
+        previous_rank = self.rank_for_score(self.rating_score())
         self.score += int(points)
         self.high_score = max(self.high_score, self.score)
         self.mode_best_score = max(self.mode_best_score, self.score)
+        if not self.score_record_announced and self.mode_best_score_start > 0 and self.score >= self.mode_best_score_start:
+            self.score_record_announced = True
+            self.play_sound(self.sounds["record_break"])
+            self.set_status_message("New mode record pace.", 140)
+            self.spawn_floating_text("Record pace!", (SCREEN_WIDTH // 2, 96), SUCCESS_COLOR, 22)
         while self.score >= self.next_extra_life_score:
             self.lives += 1
             self.next_extra_life_score += self.extra_life_step
             self.play_sound(self.sounds["bonus"])
             self.set_status_message("Bonus life awarded.", 150)
             self.spawn_floating_text("+1 LIFE", (SCREEN_WIDTH // 2, 86), SUCCESS_COLOR, 24)
+        current_rank = self.rank_for_score(self.rating_score())
+        self.live_rank_label = current_rank
+        if rank_value(current_rank) > rank_value(previous_rank):
+            self.live_rank_label = current_rank
+            self.play_sound(self.sounds["rank_up"])
+            self.set_status_message(f"Rank up: {current_rank}.", 120)
+            self.spawn_floating_text(f"Rank {current_rank}", (SCREEN_WIDTH // 2, 118), TITLE_COLOR, 22)
 
     def reset_combo(self, announce=False):
         if announce and (self.multiplier > 1 or self.combo_charge > 0):
@@ -1952,14 +2056,38 @@ class Game:
         if boss_wave:
             boss_rank = max(1, level if boss_interval == 1 else level // boss_interval)
             title, subtitle = self.wave_name_for_level(level)
+            prime = boss_rank >= 3
             return {
                 "kind": "boss",
                 "title": title,
                 "subtitle": subtitle,
                 "boss_rank": boss_rank,
+                "boss_name": "Matriarch Prime" if prime else "Hive Matriarch",
+                "prime": prime,
                 "boss_health": max(18, int((34 + boss_rank * 14) * mode["boss_health_scale"])),
                 "centipede_delay": max(1, 4 - boss_rank // 2 + mode["centipede_delay_bonus"]),
-                "boss_support_length": mode["boss_support_length"] + min(4, level // 2),
+                "boss_support_length": mode["boss_support_length"] + min(4, level // 2) + (1 if prime else 0),
+                "boss_prime_bonus": 500 * boss_rank if prime else 0,
+            }
+
+        if level >= 6 and level % 5 == 0:
+            title = "Overrun Surge"
+            subtitle = "Swarm density spikes. Hold the trench through the break."
+            surge_stage = max(0, (level - 10) // 5)
+            spider_limit = max(2, 2 + surge_stage + level // 6 + mode["spider_limit_bonus"])
+            return {
+                "kind": "surge",
+                "title": title,
+                "subtitle": subtitle,
+                "centipede_length": min(18 + level // 2 + surge_stage + mode["centipede_length_bonus"], 24),
+                "secondary_wave_count": max(1, 1 + mode["secondary_wave_bonus"] + min(1, surge_stage)),
+                "spider_rate": max(75, int((230 - level * 10 - surge_stage * 18) * mode["spider_rate_scale"])),
+                "spider_limit": spider_limit,
+                "scorpion_rate": max(105, int((470 - level * 18 - surge_stage * 24) * mode["scorpion_rate_scale"])),
+                "flea_threshold": max(2, 4 + level // 3 + mode["flea_threshold_bonus"]),
+                "centipede_delay": max(1, 4 - level // 5 + mode["centipede_delay_bonus"]),
+                "surge_bonus": 190 * level + 300 * (surge_stage + 1),
+                "surge_support_length": max(6, min(10, 6 + surge_stage + mode["secondary_wave_bonus"] + level // 8)),
             }
 
         title, subtitle = self.wave_name_for_level(level)
@@ -2009,11 +2137,26 @@ class Game:
             self.current_mode()["tagline"],
         ]
         if self.wave_profile["kind"] == "boss":
-            self.wave_intro_lines[1] = "Warning: the Hive Matriarch is inbound."
+            if self.wave_profile.get("prime"):
+                self.wave_intro_lines[1] = "Warning: Matriarch Prime inbound."
+                self.wave_intro_lines[2] = f"Break the queen fast. Prime collapse pays {self.wave_profile['boss_prime_bonus']}."
+            else:
+                self.wave_intro_lines[1] = "Warning: the Hive Matriarch is inbound."
+                self.wave_intro_lines[2] = "Break the queen fast before the reinforcements stack."
+        elif self.wave_profile["kind"] == "surge":
+            self.wave_intro_lines[1] = "Warning: overrun surge inbound."
+            self.wave_intro_lines[2] = f"Hold for a surge payout worth {self.wave_profile['surge_bonus']} points."
         self.wave_intro_timer = 110 if not HEADLESS_SMOKE_TEST else 3
         self.game_phase = "wave_intro"
-        self.play_sound(self.sounds["wave"])
-        self.trigger_flash(TITLE_COLOR, 75, 10)
+        if self.wave_profile["kind"] == "boss":
+            self.play_sound(self.sounds["warning"])
+            self.trigger_flash(DANGER_COLOR, 95, 11)
+        elif self.wave_profile["kind"] == "surge":
+            self.play_sound(self.sounds["surge"])
+            self.trigger_flash(WARNING_COLOR, 95, 11)
+        else:
+            self.play_sound(self.sounds["wave"])
+            self.trigger_flash(TITLE_COLOR, 75, 10)
 
     def deploy_current_wave(self):
         self.clear_enemies(include_mushrooms=False)
@@ -2028,10 +2171,40 @@ class Game:
                     start_x=SCREEN_WIDTH - GRID_STEP * random.randint(4, 8),
                     start_y=GRID_STEP * random.randint(2, 4),
                 )
-            self.set_status_message("Hive Matriarch entering the trench.", 150)
-            self.play_sound(self.sounds["warning"])
-            self.trigger_shake(4, 18)
-            self.trigger_flash(DANGER_COLOR, 120, 12)
+            self.set_status_message(f"{self.wave_profile.get('boss_name', 'Hive Matriarch')} entering the trench.", 150)
+            if self.wave_profile.get("prime"):
+                self.play_sound(self.sounds["boss_phase"])
+                self.trigger_shake(6, 22)
+                self.trigger_flash(DANGER_COLOR, 145, 12)
+            else:
+                self.play_sound(self.sounds["warning"])
+                self.trigger_shake(4, 18)
+                self.trigger_flash(DANGER_COLOR, 120, 12)
+        elif self.wave_profile["kind"] == "surge":
+            self.spawn_centipede_wave(self.wave_profile["centipede_length"])
+            for wave_index in range(self.wave_profile["secondary_wave_count"] + 1):
+                self.spawn_centipede_wave(
+                    length=max(6, self.wave_profile["centipede_length"] - 4 - wave_index),
+                    start_x=SCREEN_WIDTH - GRID_STEP * (4 + wave_index * 3),
+                    start_y=GRID_STEP * (3 + min(wave_index, 3)),
+                )
+            support_length = self.wave_profile.get("surge_support_length", 0)
+            if support_length:
+                self.spawn_centipede_wave(
+                    length=support_length,
+                    start_x=GRID_STEP * random.randint(2, 9),
+                    start_y=GRID_STEP * random.randint(3, 5),
+                )
+            if len(self.spiders) < 2:
+                spider = Spider(self)
+                self.add_sprite(spider, 4, self.all_sprites, self.spiders)
+            if len(self.scorpions) == 0:
+                scorpion = Scorpion(self)
+                self.add_sprite(scorpion, 4, self.all_sprites, self.scorpions)
+            self.set_status_message("Overrun surge underway. Clear the trench.", 170)
+            self.play_sound(self.sounds["surge"])
+            self.trigger_shake(6, 20)
+            self.trigger_flash(WARNING_COLOR, 140, 12)
         else:
             self.spawn_centipede_wave(self.wave_profile["centipede_length"])
             for wave_index in range(self.wave_profile["secondary_wave_count"]):
@@ -2041,6 +2214,7 @@ class Game:
                     start_y=GRID_STEP * (4 + min(wave_index, 2)),
                 )
             self.set_status_message(f"Wave {self.level} deployed. Hold the line.", 150)
+            self.play_sound(self.sounds["deploy"])
         self.game_phase = "playing"
 
     def complete_wave(self):
@@ -2054,6 +2228,18 @@ class Game:
         self.add_points(clear_bonus)
         self.spawn_floating_text(f"Wave clear +{clear_bonus}", (SCREEN_WIDTH // 2, PLAYER_ZONE_TOP - 34), SUCCESS_COLOR, 22)
         self.play_sound(self.sounds["wave"])
+        if self.wave_profile["kind"] == "boss":
+            prime_bonus = int(self.wave_profile.get("boss_prime_bonus", 0))
+            if prime_bonus:
+                self.add_points(prime_bonus)
+                self.spawn_floating_text(f"Prime collapse +{prime_bonus}", (SCREEN_WIDTH // 2, PLAYER_ZONE_TOP - 8), TITLE_COLOR, 22)
+                self.play_sound(self.sounds["bonus"])
+        if self.wave_profile["kind"] == "surge":
+            surge_bonus = int(self.wave_profile.get("surge_bonus", 0))
+            if surge_bonus:
+                self.add_points(surge_bonus)
+                self.spawn_floating_text(f"Surge bonus +{surge_bonus}", (SCREEN_WIDTH // 2, PLAYER_ZONE_TOP - 8), TITLE_COLOR, 22)
+                self.play_sound(self.sounds["surge"])
         bonus_seconds = 0
         if self.mode_timer_frames is not None:
             bonus_seconds = self.current_mode()["time_bonus_boss"] if self.wave_profile["kind"] == "boss" else self.current_mode()["time_bonus_wave"]
@@ -2062,6 +2248,10 @@ class Game:
         if self.wave_profile["kind"] == "boss" and not self.demo_arc_complete:
             self.demo_arc_complete = True
             self.set_status_message("Demo arc clear. Endless escalation unlocked.", 180)
+        elif self.wave_profile["kind"] == "boss" and self.wave_profile.get("boss_prime_bonus", 0):
+            self.set_status_message(f"Matriarch Prime broken. Banked +{self.wave_profile['boss_prime_bonus']}.", 170)
+        elif self.wave_profile["kind"] == "surge":
+            self.set_status_message(f"Overrun surge broken. Banked +{self.wave_profile['surge_bonus']}.", 160)
         else:
             self.set_status_message(f"Wave {self.level} neutralised.", 120)
         self.stabilize_mushroom_field()
@@ -2219,12 +2409,16 @@ class Game:
         return ["Audio", "Screen Shake", "Reduced Flash", "Show Briefing", "Back"]
 
     def desired_music_key(self):
-        if self.game_phase in ("title", "mode_select", "help", "records", "options", "game_over"):
+        if self.game_phase in ("mode_select", "records"):
+            return "mode_select_theme"
+        if self.game_phase in ("title", "help", "options", "game_over"):
             return "title_theme"
         if self.game_phase in ("briefing", "paused"):
             return "briefing_theme"
         if self.wave_profile and self.wave_profile["kind"] == "boss" and self.game_phase in ("wave_intro", "playing"):
             return "boss_theme"
+        if self.wave_profile and self.wave_profile["kind"] == "surge" and self.game_phase in ("wave_intro", "playing"):
+            return "surge_theme"
         if self.game_phase == "wave_intro":
             return "briefing_theme"
         if self.game_phase == "playing":
@@ -2278,17 +2472,23 @@ class Game:
             self.set_status_message("Tutorial complete. Chase the high score.", 150)
             self.play_sound(self.sounds["bonus"])
 
-    def run_rank(self):
-        rating_score = self.score + self.stats["waves_cleared"] * 650 + self.best_multiplier * 500 + self.stats["bosses_destroyed"] * 1600
-        if rating_score >= 18000:
-            return "S"
-        if rating_score >= 12000:
-            return "A"
-        if rating_score >= 7000:
-            return "B"
-        if rating_score >= 3000:
-            return "C"
+    def rating_score(self):
+        return self.score + self.stats["waves_cleared"] * 650 + self.best_multiplier * 500 + self.stats["bosses_destroyed"] * 1600
+
+    def rank_for_score(self, rating_score):
+        for label, target in reversed(RANK_THRESHOLDS):
+            if rating_score >= target:
+                return label
         return "D"
+
+    def next_rank_target(self, rating_score):
+        for label, target in RANK_THRESHOLDS:
+            if rating_score < target:
+                return label, target
+        return None, None
+
+    def run_rank(self):
+        return self.rank_for_score(self.rating_score())
 
     def tutorial_focus_hint(self):
         if self.stats["segments_destroyed"] < 3:
@@ -2302,7 +2502,7 @@ class Game:
         return "Hold the lane."
 
     def title_menu_items(self):
-        return ["Start Run", "Run Records", "How To Play", "Options", "Quit"]
+        return ["Quick Start", "Select Mode", "Run Records", "How To Play", "Options", "Quit"]
 
     def handle_keydown(self, key):
         if key == pygame.K_m:
@@ -2352,21 +2552,29 @@ class Game:
             self.play_sound(self.sounds["menu"])
         elif key in (pygame.K_RETURN, pygame.K_SPACE):
             choice = items[self.title_menu_index]
-            if choice == "Start Run":
+            if choice == "Quick Start":
+                self.play_sound(self.sounds["menu_confirm"])
+                self.start_run(mode_id=self.current_mode_id, skip_briefing=True)
+            elif choice == "Select Mode":
+                self.play_sound(self.sounds["menu_confirm"])
                 self.mode_select_index = self.mode_ids.index(self.current_mode_id)
                 self.game_phase = "mode_select"
             elif choice == "Run Records":
+                self.play_sound(self.sounds["menu_confirm"])
                 self.menu_return_phase = "title"
                 self.records_mode_index = self.mode_ids.index(self.current_mode_id)
                 self.game_phase = "records"
             elif choice == "How To Play":
+                self.play_sound(self.sounds["menu_confirm"])
                 self.menu_return_phase = "title"
                 self.game_phase = "help"
             elif choice == "Options":
+                self.play_sound(self.sounds["menu_confirm"])
                 self.menu_return_phase = "title"
                 self.options_menu_index = 0
                 self.game_phase = "options"
             else:
+                self.play_sound(self.sounds["menu_confirm"])
                 self.running = False
         elif key == pygame.K_ESCAPE:
             self.running = False
@@ -2383,14 +2591,17 @@ class Game:
             if self.mode_is_unlocked(mode_id):
                 self.current_mode_id = mode_id
                 self.mode_best_score = self.mode_record(mode_id)["best_score"]
+                self.play_sound(self.sounds["menu_confirm"])
                 self.start_run(mode_id=mode_id, skip_briefing=HEADLESS_SMOKE_TEST)
             else:
                 self.set_status_message(self.unlock_requirement_text(mode_id), 150)
                 self.play_sound(self.sounds["warning"])
         elif key == pygame.K_h:
+            self.play_sound(self.sounds["menu_confirm"])
             self.menu_return_phase = "mode_select"
             self.game_phase = "help"
         elif key == pygame.K_r:
+            self.play_sound(self.sounds["menu_confirm"])
             self.menu_return_phase = "mode_select"
             self.records_mode_index = self.mode_select_index
             self.game_phase = "records"
@@ -2399,8 +2610,10 @@ class Game:
 
     def handle_briefing_input(self, key):
         if key in (pygame.K_RETURN, pygame.K_SPACE):
+            self.play_sound(self.sounds["menu_confirm"])
             self.begin_wave(1)
         elif key == pygame.K_h:
+            self.play_sound(self.sounds["menu_confirm"])
             self.menu_return_phase = "briefing"
             self.game_phase = "help"
         elif key == pygame.K_ESCAPE:
@@ -2423,6 +2636,7 @@ class Game:
                 self.current_mode_id = mode_id
                 self.mode_select_index = self.records_mode_index
                 self.mode_best_score = self.mode_record(mode_id)["best_score"]
+                self.play_sound(self.sounds["menu_confirm"])
                 self.start_run(mode_id=mode_id, skip_briefing=HEADLESS_SMOKE_TEST)
             else:
                 self.set_status_message(self.unlock_requirement_text(mode_id), 150)
@@ -2441,8 +2655,10 @@ class Game:
         elif key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_LEFT, pygame.K_RIGHT):
             selected = items[self.options_menu_index]
             if selected == "Back":
+                self.play_sound(self.sounds["menu_confirm"])
                 self.game_phase = self.menu_return_phase
             else:
+                self.play_sound(self.sounds["menu_confirm"])
                 self.toggle_option(selected)
         elif key == pygame.K_ESCAPE:
             self.game_phase = self.menu_return_phase
@@ -2580,30 +2796,37 @@ class Game:
             self.flash_alpha = max(0, self.flash_alpha - self.flash_decay)
 
     def update_enemy_spawns(self):
-        if self.wave_profile["kind"] != "swarm":
+        kind = self.wave_profile["kind"]
+        if kind not in ("swarm", "surge"):
             return
 
+        surge = kind == "surge"
+        rate_scale = 0.75 if surge else 1.0
+        spider_rate = max(35, int(self.wave_profile["spider_rate"] * rate_scale))
+        spider_limit = self.wave_profile["spider_limit"] + (1 if surge else 0)
         self.spider_spawn_counter += 1
         if (
-            self.spider_spawn_counter >= self.wave_profile["spider_rate"]
-            and len(self.spiders) < self.wave_profile["spider_limit"]
+            self.spider_spawn_counter >= spider_rate
+            and len(self.spiders) < spider_limit
         ):
             self.spider_spawn_counter = 0
             spider = Spider(self)
             self.add_sprite(spider, 4, self.all_sprites, self.spiders)
 
         mushrooms_in_player_area = [m for m in self.mushrooms if m.rect.y > PLAYER_ZONE_TOP - 60]
-        flea_roll = max(45, 125 - self.level * 6)
+        flea_roll = max(35, 125 - self.level * 6)
+        flea_threshold = max(1, self.wave_profile["flea_threshold"] - (1 if surge else 0))
         if (
-            len(mushrooms_in_player_area) < self.wave_profile["flea_threshold"]
+            len(mushrooms_in_player_area) < flea_threshold
             and len(self.fleas) < 1 + self.level // 8
             and random.randint(1, flea_roll) == 1
         ):
             flea = Flea(self)
             self.add_sprite(flea, 4, self.all_sprites, self.fleas)
 
+        scorpion_rate = max(70, int(self.wave_profile["scorpion_rate"] * rate_scale))
         self.scorpion_spawn_counter += 1
-        if self.scorpion_spawn_counter >= self.wave_profile["scorpion_rate"] and len(self.scorpions) == 0:
+        if self.scorpion_spawn_counter >= scorpion_rate and len(self.scorpions) == 0:
             self.scorpion_spawn_counter = 0
             scorpion = Scorpion(self)
             self.add_sprite(scorpion, 4, self.all_sprites, self.scorpions)
@@ -2715,9 +2938,16 @@ class Game:
                     self.spawn_effect("explosion", boss.rect.center, large=True)
                     self.spawn_effect("explosion", boss.rect.midleft, large=True)
                     self.spawn_effect("explosion", boss.rect.midright, large=True)
-                    self.register_combo_kill(3500, boss.rect.center, "Matriarch")
-                    self.trigger_shake(8, 20)
-                    self.trigger_flash(DANGER_COLOR, 150, 9)
+                    if boss.profile.get("prime"):
+                        self.spawn_effect("explosion", boss.rect.midtop, large=True)
+                        self.spawn_effect("explosion", boss.rect.midbottom, large=True)
+                    self.register_combo_kill(
+                        4200 if boss.profile.get("prime") else 3500,
+                        boss.rect.center,
+                        "Matriarch Prime" if boss.profile.get("prime") else "Matriarch",
+                    )
+                    self.trigger_shake(10 if boss.profile.get("prime") else 8, 24 if boss.profile.get("prime") else 20)
+                    self.trigger_flash(DANGER_COLOR, 165 if boss.profile.get("prime") else 150, 9)
 
         projectile_hits = pygame.sprite.groupcollide(self.enemy_projectiles, self.mushrooms, True, False)
         for mushroom_group in projectile_hits.values():
@@ -2743,6 +2973,9 @@ class Game:
     def handle_player_hit(self):
         self.play_sound(self.sounds["player_die"])
         self.lives -= 1
+        if self.lives == 1:
+            self.play_sound(self.sounds["last_life"])
+            self.set_status_message("Final ship in the trench.", 150)
         self.trigger_flash(DANGER_COLOR, 175, 12)
         self.trigger_shake(6, 18)
         self.spawn_effect("explosion", self.player.rect.center, large=False)
@@ -2750,7 +2983,8 @@ class Game:
         if self.lives <= 0:
             self.enter_game_over("destroyed")
         else:
-            self.set_status_message("Defence line breached. Rebuilding lane.", 120)
+            if self.lives > 1:
+                self.set_status_message("Defence line breached. Rebuilding lane.", 120)
             self.reset_after_life()
 
     def resolve_wave_completion(self):
@@ -2776,15 +3010,31 @@ class Game:
 
     def draw_hud(self, surface):
         theme = self.level_theme
-        left_chip = pygame.Rect(12, 10, 148, 58)
+        left_chip = pygame.Rect(12, 10, 170, 96)
         center_chip = pygame.Rect(238, 8, 324, 52)
-        right_chip = pygame.Rect(SCREEN_WIDTH - 160, 10, 148, 58)
+        right_chip = pygame.Rect(SCREEN_WIDTH - 168, 10, 156, 58)
         for chip in (left_chip, center_chip, right_chip):
             pygame.draw.rect(surface, (10, 16, 26), chip, border_radius=14)
             pygame.draw.rect(surface, theme["panel_border"], chip, width=1, border_radius=14)
 
         self.draw_text(surface, f"Score {self.score}", 20, 22, 14, WHITE, align="topleft", bold=True)
         self.draw_text(surface, f"Lives {self.lives}", 18, 22, 40, SUCCESS_COLOR, align="topleft")
+        rating_score = self.rating_score()
+        next_label, next_target = self.next_rank_target(rating_score)
+        self.draw_text(surface, f"Rank {self.live_rank_label}", 16, 22, 64, TITLE_COLOR, align="topleft")
+        if next_label:
+            remaining = max(0, next_target - rating_score)
+            self.draw_text(surface, f"Next {next_label} in {remaining}", 14, 22, 84, (176, 188, 206), align="topleft")
+        if self.wave_profile["kind"] == "surge":
+            self.draw_text(surface, f"Surge clear bonus {self.wave_profile['surge_bonus']}", 14, 22, 104, WARNING_COLOR, align="topleft")
+        elif self.wave_profile["kind"] == "boss" and self.wave_profile.get("boss_prime_bonus"):
+            self.draw_text(surface, f"Prime collapse bonus {self.wave_profile['boss_prime_bonus']}", 14, 22, 104, WARNING_COLOR, align="topleft")
+        elif self.mode_best_score_start > 0 and self.score < self.mode_best_score_start:
+            self.draw_text(surface, f"Need {self.mode_best_score_start - self.score} for mode record", 14, 22, 104, (176, 188, 206), align="topleft")
+        elif self.score > self.mode_best_score_start:
+            self.draw_text(surface, f"Record pace +{self.score - self.mode_best_score_start}", 14, 22, 104, SUCCESS_COLOR, align="topleft")
+        else:
+            self.draw_text(surface, "Set the opening benchmark", 14, 22, 104, (176, 188, 206), align="topleft")
         self.draw_text(surface, f"Wave {self.level}", 18, SCREEN_WIDTH - 22, 14, theme["title"], align="topright", bold=True)
         self.draw_text(surface, f"Best {self.mode_best_score}", 16, SCREEN_WIDTH - 22, 40, theme["warning"], align="topright")
         self.draw_text(surface, f"{self.current_mode()['short_label']}  |  {self.wave_profile['title']}", 16, SCREEN_WIDTH / 2, 12, (212, 224, 240), bold=True)
@@ -2814,8 +3064,30 @@ class Game:
         if self.bosses:
             boss = self.bosses.sprites()[0]
             bar = pygame.Rect(232, SCREEN_HEIGHT - 46, SCREEN_WIDTH - 254, 20)
-            self.draw_meter(surface, bar, boss.health / boss.max_health, (255, 95, 95))
-            self.draw_text(surface, "Hive Matriarch", 16, SCREEN_WIDTH / 2, SCREEN_HEIGHT - 72, DANGER_COLOR, bold=True)
+            phase_colors = {
+                1: (255, 96, 102),
+                2: (255, 152, 94),
+                3: (255, 202, 96),
+            }
+            self.draw_meter(surface, bar, boss.health / boss.max_health, phase_colors.get(boss.phase, DANGER_COLOR))
+            for marker in (1, 2):
+                marker_x = bar.x + (bar.width * marker) // 3
+                pygame.draw.line(surface, (30, 20, 26), (marker_x, bar.y + 1), (marker_x, bar.bottom - 1), 2)
+            boss_name = "Matriarch Prime" if boss.profile.get("prime") else "Hive Matriarch"
+            phase_text = {
+                1: "Opening pressure",
+                2: "Reinforcements rising",
+                3: "Trench break armed" if boss.profile.get("prime") else "Final pressure",
+            }.get(boss.phase, "Press the attack")
+            self.draw_text(
+                surface,
+                f"{boss_name}  |  Phase {boss.phase}/3  |  {phase_text}",
+                15,
+                SCREEN_WIDTH / 2,
+                SCREEN_HEIGHT - 72,
+                DANGER_COLOR,
+                bold=True,
+            )
 
         audio_label = "Audio On" if self.sound_enabled else "Audio Muted"
         audio_color = AUDIO_ON_COLOR if self.sound_enabled else AUDIO_OFF_COLOR
@@ -2844,7 +3116,7 @@ class Game:
 
     def draw_menu(self, surface, items, selected_index, start_y):
         for index, label in enumerate(items):
-            y = start_y + index * 34
+            y = start_y + index * 32
             active = index == selected_index
             color = TITLE_COLOR if active else WHITE
             if active:
@@ -2855,7 +3127,7 @@ class Game:
 
     def draw_title_screen(self):
         self.draw_background(self.screen)
-        panel = pygame.Rect(88, 64, SCREEN_WIDTH - 176, SCREEN_HEIGHT - 128)
+        panel = pygame.Rect(88, 44, SCREEN_WIDTH - 176, SCREEN_HEIGHT - 88)
         self.draw_panel(self.screen, panel)
         self.draw_text(self.screen, "SWARMBREAKER", 52, SCREEN_WIDTH / 2, 104, TITLE_COLOR, bold=True)
         self.draw_text(self.screen, "Arcade trench defence against a venom-guided segmented swarm.", 20, SCREEN_WIDTH / 2, 164, WHITE)
@@ -2866,18 +3138,39 @@ class Game:
         ]
         for index, line in enumerate(story_lines):
             self.draw_text(self.screen, line, 18, SCREEN_WIDTH / 2, 204 + index * 24, (210, 221, 236))
-        self.draw_menu(self.screen, self.title_menu_items(), self.title_menu_index, 300)
-        self.draw_text(self.screen, f"Career High  {self.high_score}", 22, SCREEN_WIDTH / 2, 468, WARNING_COLOR, bold=True)
+
+        current_record = self.mode_record(self.current_mode_id)
+        lifetime = self.profile["lifetime"]
+        intel_strip = pygame.Rect(120, 274, SCREEN_WIDTH - 240, 48)
+        self.draw_panel(self.screen, intel_strip)
+        self.draw_text(self.screen, f"Current Deployment  |  {self.current_mode()['label']}", 18, intel_strip.centerx, intel_strip.y + 8, TITLE_COLOR, bold=True)
         self.draw_text(
             self.screen,
-            f"Unlocked Modes  {sum(1 for mode_id in self.mode_ids if self.mode_is_unlocked(mode_id))}/{len(self.mode_ids)}",
-            18,
+            f"Best {current_record['best_score']}   Wave {current_record['best_wave']}   x{current_record['best_multiplier']}   Runs {lifetime['runs']}   Bosses {lifetime['bosses_destroyed']}   Clears {lifetime['waves_cleared']}",
+            14,
+            intel_strip.centerx,
+            intel_strip.y + 28,
+            WARNING_COLOR,
+        )
+        self.draw_menu(self.screen, self.title_menu_items(), self.title_menu_index, 320)
+        self.draw_text(
+            self.screen,
+            f"Career High  {self.high_score}   |   Unlocked Modes  {sum(1 for mode_id in self.mode_ids if self.mode_is_unlocked(mode_id))}/{len(self.mode_ids)}",
+            20,
             SCREEN_WIDTH / 2,
             500,
-            SUCCESS_COLOR,
+            WARNING_COLOR,
+            bold=True,
         )
-        self.draw_text(self.screen, "Arrow keys move. Push up the trench for extra dodge space. P pauses. M toggles audio.", 17, SCREEN_WIDTH / 2, 516, (172, 186, 205))
-        self.draw_text(self.screen, "Phase two build: challenge modes, local records, and unlockable pressure tests.", 16, SCREEN_WIDTH / 2, 548, SUCCESS_COLOR)
+        self.draw_text(
+            self.screen,
+            "Quick Start jumps into the current mode instantly. Select Mode opens the full ruleset list.",
+            16,
+            SCREEN_WIDTH / 2,
+            530,
+            (176, 188, 206),
+        )
+        self.draw_text(self.screen, "Arrow keys move. Push up the trench for extra dodge space. P pauses. M toggles audio.", 16, SCREEN_WIDTH / 2, 556, (172, 186, 205))
 
     def draw_mode_select_screen(self):
         self.draw_background(self.screen)
@@ -2886,8 +3179,8 @@ class Game:
         self.draw_text(self.screen, "Select Run", 44, SCREEN_WIDTH / 2, 84, TITLE_COLOR, bold=True)
         self.draw_text(self.screen, "Choose a ruleset, check the unlock state, and deploy when ready.", 18, SCREEN_WIDTH / 2, 128, WHITE)
 
-        list_rect = pygame.Rect(96, 172, 238, 308)
-        detail_rect = pygame.Rect(356, 172, 348, 308)
+        list_rect = pygame.Rect(96, 172, 238, 332)
+        detail_rect = pygame.Rect(356, 172, 348, 332)
         self.draw_panel(self.screen, list_rect)
         self.draw_panel(self.screen, detail_rect)
 
@@ -2914,7 +3207,13 @@ class Game:
         record = self.mode_record(mode_id)
         unlocked = self.mode_is_unlocked(mode_id)
         self.draw_text(self.screen, mode["label"], 28, detail_rect.centerx, detail_rect.y + 18, TITLE_COLOR, bold=True)
-        self.draw_text(self.screen, mode["tagline"], 17, detail_rect.centerx, detail_rect.y + 54, WHITE)
+        self.draw_wrapped_text(
+            self.screen,
+            mode["tagline"],
+            16,
+            pygame.Rect(detail_rect.x + 18, detail_rect.y + 48, detail_rect.width - 36, 32),
+            WHITE,
+        )
         self.draw_text(
             self.screen,
             f"Local best {record['best_score']}   Rank {record['best_rank']}   Wave {record['best_wave']}",
@@ -2923,24 +3222,58 @@ class Game:
             detail_rect.y + 86,
             WARNING_COLOR,
         )
+
+        stat_specs = [
+            ("Runs", str(record["runs"])),
+            ("Best x", f"{record['best_multiplier']}x"),
+            ("Best time", format_seconds(record["best_time_seconds"])),
+        ]
+        chip_y = detail_rect.y + 108
+        chip_width = 98
+        chip_gap = 10
+        chip_x = detail_rect.x + 18
+        for label, value in stat_specs:
+            chip = pygame.Rect(chip_x, chip_y, chip_width, 44)
+            pygame.draw.rect(self.screen, (13, 20, 31), chip, border_radius=12)
+            pygame.draw.rect(self.screen, PANEL_BORDER, chip, width=1, border_radius=12)
+            self.draw_text(self.screen, label, 13, chip.centerx, chip.y + 8, (176, 188, 206), bold=True)
+            self.draw_text(self.screen, value, 17, chip.centerx, chip.y + 24, WHITE, bold=True)
+            chip_x += chip_width + chip_gap
+
         description_bottom = self.draw_wrapped_text(
             self.screen,
             mode["description"],
-            16,
-            pygame.Rect(detail_rect.x + 18, detail_rect.y + 116, detail_rect.width - 36, 48),
+            15,
+            pygame.Rect(detail_rect.x + 18, detail_rect.y + 164, detail_rect.width - 36, 56),
             (192, 205, 224),
         )
 
         rules_y = description_bottom + 8
-        for line in mode["rules"]:
-            self.draw_text(self.screen, f"- {line}", 16, detail_rect.x + 18, rules_y, WHITE, align="topleft")
-            rules_y += 28
+        for line in mode["rules"][:2]:
+            rules_y = self.draw_wrapped_text(
+                self.screen,
+                f"- {line}",
+                14,
+                pygame.Rect(detail_rect.x + 18, rules_y, detail_rect.width - 36, 36),
+                WHITE,
+            ) + 4
+        if len(mode["rules"]) > 2:
+            self.draw_text(self.screen, "See briefing for the full rule breakdown.", 13, detail_rect.x + 18, rules_y, (176, 188, 206), align="topleft")
+            rules_y += 18
 
-        footer_color = SUCCESS_COLOR if unlocked else WARNING_COLOR
-        footer_text = "Press Enter to launch this run." if unlocked else self.unlock_requirement_text(mode_id)
-        self.draw_text(self.screen, footer_text, 16, detail_rect.centerx, detail_rect.bottom - 52, footer_color, bold=True)
-        self.draw_text(self.screen, self.unlock_progress_text(mode_id), 15, detail_rect.centerx, detail_rect.bottom - 28, (176, 188, 206))
-        self.draw_text(self.screen, "Arrows change mode. R opens records. H opens help. Esc goes back.", 16, SCREEN_WIDTH / 2, 520, (176, 188, 206))
+        boss_interval = mode["boss_interval"]
+        boss_line = "Boss cadence: every wave" if boss_interval == 1 else f"Boss cadence: every {boss_interval} waves"
+        time_limit = mode["time_limit_seconds"]
+        metadata_line = f"{boss_line}   |   Surges from wave 10"
+        if time_limit:
+            metadata_line += f"   |   Clock {format_seconds(time_limit)}"
+        self.draw_text(self.screen, metadata_line, 13, detail_rect.x + 18, rules_y, (176, 188, 206), align="topleft")
+        rules_y += 18
+
+        if not unlocked:
+            self.draw_text(self.screen, self.unlock_requirement_text(mode_id), 15, detail_rect.centerx, detail_rect.bottom - 44, WARNING_COLOR, bold=True)
+            self.draw_text(self.screen, self.unlock_progress_text(mode_id), 15, detail_rect.centerx, detail_rect.bottom - 22, (176, 188, 206))
+        self.draw_text(self.screen, "Arrows change mode. Enter/Space deploy. R opens records. H opens help. Esc goes back.", 16, SCREEN_WIDTH / 2, 520, (176, 188, 206))
 
     def draw_briefing_screen(self):
         mode = self.current_mode()
@@ -2961,6 +3294,7 @@ class Game:
             "Build score by chaining kills before the combo timer expires.",
             f"Every {mode['extra_life_step']:,} points earns another defence ship.",
             boss_line,
+            "Late-wave overrun surges start from Wave 10 and pay out extra points if cleared.",
         ]
         y = 178
         for line in briefing:
